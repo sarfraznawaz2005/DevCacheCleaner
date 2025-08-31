@@ -30,7 +30,7 @@ ProcessSetPriority "High"
 ; ---------------------------
 ; ---- Config & Defaults ----
 ; ---------------------------
-global AppTitle := "Cleanup Dev Cache (AHK)"
+global AppTitle := "Dev Cache Cleaner"
 global IniFile  := A_ScriptDir "\cleanup.ini"
 global MaxDepth := 8
 global IncludeWindowsCleanup := true
