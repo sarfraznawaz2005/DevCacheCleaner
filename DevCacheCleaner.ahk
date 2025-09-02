@@ -585,7 +585,7 @@ UpdateTotals() {
     for it in Items
         If it["selected"]
             total += it["size"]
-    TotalLabel.Value := "Total to recover (selected): " HumanSize(total) "  —  Items: " CountSelected() "/" Items.Length
+    TotalLabel.Value := "Total to recover (selected): " HumanSize(total)
     SB("Preview complete. Select/deselect items as needed.")
 }
 
