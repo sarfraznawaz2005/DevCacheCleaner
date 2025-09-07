@@ -27,6 +27,10 @@ if not A_IsAdmin {
 Persistent
 ProcessSetPriority "High"
 
+; --- Tray Menu ---
+A_TrayMenu.Delete()
+A_TrayMenu.Add("Exit", (*) => ExitApp())
+
 ; ---------------------------
 ; ---- Config & Defaults ----
 ; ---------------------------
@@ -226,10 +230,10 @@ ExpandList(str) {
 ; ----------- GUI -----------
 ; ---------------------------
 BuildGui() {
-    global LV, TotalLabel, StatusBar, DeleteBtn, RefreshBtn, OpenBtn, ExitBtn
+    global LV, TotalLabel, StatusBar, DeleteBtn, RefreshBtn, OpenBtn
 
     GuiTitle := AppTitle
-    myGui := Gui("+Resize", GuiTitle)
+    myGui := Gui("+Resize -MaximizeBox", GuiTitle)
     myGui.MarginX := 10, myGui.MarginY := 10
 
 	RefreshBtn := myGui.Add("Button", "x10 y10", "Refresh")
@@ -242,9 +246,6 @@ BuildGui() {
 
 	OpenBtn := myGui.Add("Button", "x+10 yp", "Open Config")
 	OpenBtn.OnEvent("Click", (*) => Run(A_ComSpec ' /c start "" "' IniFile '"'))
-
-	ExitBtn := myGui.Add("Button", "x+10 yp w80 h30", "Exit")
-	ExitBtn.OnEvent("Click", (*) => ExitApp())
 
     TotalLabel := myGui.Add("Text", "x10 y+10 w800", "Total to recover: calculating…")
 
@@ -266,11 +267,12 @@ BuildGui() {
     StatusBar := myGui.Add("StatusBar")
     myGui.OnEvent("Size", OnResize)
 
+    myGui.OnEvent("Close", (*) => ExitApp())
     myGui.Show("w1100 h700 Center")
 }
 
 SetScanBusy(flag) {
-    global RefreshBtn, DeleteBtn, OpenBtn, ExitBtn, LV
+    global RefreshBtn, DeleteBtn, OpenBtn, LV
     ; Disable everything except Exit while scanning
     for ctrl in [RefreshBtn, DeleteBtn, OpenBtn, LV] {
         try ctrl.Enabled := !flag
@@ -279,15 +281,15 @@ SetScanBusy(flag) {
 }
 
 SetUIBusy(flag) {
-    global RefreshBtn, DeleteBtn, OpenBtn, ExitBtn, LV, StatusBar
-    for ctrl in [RefreshBtn, DeleteBtn, OpenBtn, ExitBtn, LV] {
+    global RefreshBtn, DeleteBtn, OpenBtn, LV, StatusBar
+    for ctrl in [RefreshBtn, DeleteBtn, OpenBtn, LV] {
         try ctrl.Enabled := !flag
     }
     SB(flag ? "Deleting… please wait." : "Ready.")
 }
 
 OnResize(gui, minMax, width, height) {
-    global LV, TotalLabel, RefreshBtn, DeleteBtn, OpenBtn, ExitBtn, StatusBar
+    global LV, TotalLabel, RefreshBtn, DeleteBtn, OpenBtn, StatusBar
 
     if (minMax = -1) ; minimized
         return
@@ -299,9 +301,6 @@ OnResize(gui, minMax, width, height) {
 	DeleteBtn.GetPos(&dx, &dy, &dw, &dh)
 
 	OpenBtn.Move(dx + dw + 10, ry)
-
-	ExitBtn.GetPos(, , &ew, &eh)           ; get its current width/height
-    ExitBtn.Move(width - 10 - ew, 10)      ; 10px right margin
 
 	TotalLabel.Move(10, ry + rh + 10, width - 20)
 	TotalLabel.GetPos(&tx, &ty, &tw, &th)
@@ -543,18 +542,21 @@ SplitPathName(p) {
 ; ------ List & Totals ------
 ; ---------------------------
 PopulateListView() {
-    global LV, Items
-    LV.Opt("-Redraw")  ; <-- add
-    for idx, item in Items {
-        sizeStr := HumanSize(item["size"])
-        LV.Add("Check", item["type"], item["path"], sizeStr, item["size"])
-        LV.Modify(idx, item["selected"] ? "Check" : "UnCheck")
-    }
-    LV.ModifyCol(4, "Integer")
-    LV.ModifyCol(4, "SortDesc")
-    LV.OnEvent("ColClick", OnColClick)
-    LV.OnEvent("DoubleClick", OnOpenRow)
-    LV.Opt("+Redraw")  ; <-- add
+	try {
+		global LV, Items
+		LV.Opt("-Redraw")  ; <-- add
+		for idx, item in Items {
+			sizeStr := HumanSize(item["size"])
+			LV.Add("Check", item["type"], item["path"], sizeStr, item["size"])
+			LV.Modify(idx, item["selected"] ? "Check" : "UnCheck")
+		}
+		LV.ModifyCol(4, "Integer")
+		LV.ModifyCol(4, "SortDesc")
+		LV.OnEvent("ColClick", OnColClick)
+		LV.OnEvent("DoubleClick", OnOpenRow)
+		LV.Opt("+Redraw")
+	} Catch as e {
+	}
 }
 
 OnColClick(ctrl, col) {
@@ -580,13 +582,16 @@ OnOpenRow(ctrl, row) {
 }
 
 UpdateTotals() {
-    global Items, TotalLabel, LV
-    total := 0
-    for it in Items
-        If it["selected"]
-            total += it["size"]
-    TotalLabel.Value := "Total to recover (selected): " HumanSize(total)
-    SB("Preview complete. Select/deselect items as needed.")
+	try {
+		global Items, TotalLabel, LV
+		total := 0
+		for it in Items
+			If it["selected"]
+				total += it["size"]
+		TotalLabel.Value := "Total to recover (selected): " HumanSize(total)
+		SB("Preview complete. Select/deselect items as needed.")
+	} Catch as e {
+	}    
 }
 
 CountSelected() {
@@ -610,8 +615,11 @@ HumanSize(bytes) {
 }
 
 SB(msg) {
-    global StatusBar
-    StatusBar.SetText(msg)
+	try {
+		global StatusBar
+		StatusBar.SetText(msg)
+	} Catch as e {
+	}    
 }
 
 ; ---------------------------
