@@ -228,7 +228,7 @@ ExpandList(str) {
 BuildGui() {
     global LV, TotalLabel, StatusBar, DeleteBtn, RefreshBtn, OpenBtn, ExitBtn
 
-    GuiTitle := AppTitle "  —  Preview"
+    GuiTitle := AppTitle
     myGui := Gui("+Resize", GuiTitle)
     myGui.MarginX := 10, myGui.MarginY := 10
 
