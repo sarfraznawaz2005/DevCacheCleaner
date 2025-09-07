@@ -258,7 +258,7 @@ BuildGui() {
 	LV.InsertCol(2, "", "Path")
 	LV.InsertCol(3, "", "Size")
 	LV.InsertCol(4, "", "Bytes")   ; hidden numeric sort key
-	LV.ModifyCol(4, "Integer")     ; <- numeric sort
+	LV.ModifyCol(4, "Float")     ; <- numeric sort
 	LV.ModifyCol(4, 0)             ; keep hidden
 
     LV.ModifyCol(1, 180), LV.ModifyCol(2, 760), LV.ModifyCol(3, 100)
@@ -550,7 +550,7 @@ PopulateListView() {
 			LV.Add("Check", item["type"], item["path"], sizeStr, item["size"])
 			LV.Modify(idx, item["selected"] ? "Check" : "UnCheck")
 		}
-		LV.ModifyCol(4, "Integer")
+		LV.ModifyCol(4, "Float")
 		LV.ModifyCol(4, "SortDesc")
 		LV.OnEvent("ColClick", OnColClick)
 		LV.OnEvent("DoubleClick", OnOpenRow)
@@ -562,7 +562,7 @@ PopulateListView() {
 OnColClick(ctrl, col) {
     static dir := 1  ; toggles ASC/DESC
     if (col = 3) {
-        ctrl.ModifyCol(4, "Integer")               ; ensure numeric sort
+        ctrl.ModifyCol(4, "Float")               ; ensure numeric sort
         ctrl.ModifyCol(4, dir = 1 ? "Sort" : "SortDesc")  ; sort by bytes
     } else {
         ctrl.ModifyCol(col, dir = 1 ? "Sort" : "SortDesc")
