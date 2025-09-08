@@ -55,8 +55,8 @@ global GlobalCachePaths := []
 global SystemFilePatterns := []
 
 ; UI globals
-global LV, TotalLabel, StatusBar, DeleteBtn, RefreshBtn, OpenBtn
-global Items := [] ; array of maps: {type, path, size, selected}
+global LV, TotalLabel, StatusBar, DeleteBtn, RefreshBtn, OpenBtn, SelectAllChk
+global Items := [] ; array of maps: {type, path, size}
 
 ; ---------------------------
 ; ------------ Main ---------
@@ -230,7 +230,7 @@ ExpandList(str) {
 ; ----------- GUI -----------
 ; ---------------------------
 BuildGui() {
-    global LV, TotalLabel, StatusBar, DeleteBtn, RefreshBtn, OpenBtn
+    global LV, TotalLabel, StatusBar, DeleteBtn, RefreshBtn, OpenBtn, SelectAllChk
 
     GuiTitle := AppTitle
     myGui := Gui("+Resize -MaximizeBox", GuiTitle)
@@ -247,7 +247,13 @@ BuildGui() {
 	OpenBtn := myGui.Add("Button", "x+10 yp", "Open Config")
 	OpenBtn.OnEvent("Click", (*) => Run(A_ComSpec ' /c start "" "' IniFile '"'))
 
-    TotalLabel := myGui.Add("Text", "x10 y+10 w800", "Total to recover: calculating…")
+    myGui.SetFont("s12 cBlue Bold")
+    TotalLabel := myGui.Add("Text", "x10 y+10 w300", "Recoverable: Calculating…")
+    myGui.SetFont()
+
+    SelectAllChk := myGui.Add("Checkbox", "x10 y+5", "Select All")
+    SelectAllChk.Value := true
+    SelectAllChk.OnEvent("Click", (*) => (SelectAllChk.Value ? CheckAllItems() : UncheckAllItems()))
 
     myGui.SetFont("s10")  ; bigger list font
 
@@ -262,7 +268,7 @@ BuildGui() {
 	LV.ModifyCol(4, 0)             ; keep hidden
 
     LV.ModifyCol(1, 180), LV.ModifyCol(2, 760), LV.ModifyCol(3, 100)
-    LV.OnEvent("Click", (ctrl, row) => (row ? (Items[row]["selected"] := ctrl.GetNext(row-1, "C"), UpdateTotals()) : 0))
+    LV.OnEvent("Click", (ctrl, row) => (row ? (Items[row]["selected"] := (ctrl.GetNext(row, "C") == row), UpdateTotals()) : 0))
 
     StatusBar := myGui.Add("StatusBar")
     myGui.OnEvent("Size", OnResize)
@@ -272,24 +278,24 @@ BuildGui() {
 }
 
 SetScanBusy(flag) {
-    global RefreshBtn, DeleteBtn, OpenBtn, LV
+    global RefreshBtn, DeleteBtn, OpenBtn, LV, SelectAllChk
     ; Disable everything except Exit while scanning
-    for ctrl in [RefreshBtn, DeleteBtn, OpenBtn, LV] {
+    for ctrl in [RefreshBtn, DeleteBtn, OpenBtn, LV, SelectAllChk] {
         try ctrl.Enabled := !flag
     }
     ; Exit stays enabled
 }
 
 SetUIBusy(flag) {
-    global RefreshBtn, DeleteBtn, OpenBtn, LV, StatusBar
-    for ctrl in [RefreshBtn, DeleteBtn, OpenBtn, LV] {
+    global RefreshBtn, DeleteBtn, OpenBtn, LV, StatusBar, SelectAllChk
+    for ctrl in [RefreshBtn, DeleteBtn, OpenBtn, LV, SelectAllChk] {
         try ctrl.Enabled := !flag
     }
     SB(flag ? "Deleting… please wait." : "Ready.")
 }
 
 OnResize(gui, minMax, width, height) {
-    global LV, TotalLabel, RefreshBtn, DeleteBtn, OpenBtn, StatusBar
+    global LV, TotalLabel, RefreshBtn, DeleteBtn, OpenBtn, StatusBar, SelectAllChk
 
     if (minMax = -1) ; minimized
         return
@@ -301,11 +307,14 @@ OnResize(gui, minMax, width, height) {
 	DeleteBtn.GetPos(&dx, &dy, &dw, &dh)
 
 	OpenBtn.Move(dx + dw + 10, ry)
+	OpenBtn.GetPos(&ox, &oy, &ow, &oh)
 
-	TotalLabel.Move(10, ry + rh + 10, width - 20)
+	TotalLabel.Move(10 + ((width - 20 - 200) // 2), oy + oh + 10, 200)
 	TotalLabel.GetPos(&tx, &ty, &tw, &th)
 
-	LV.Move(10, ty + th + 5, width - 20, height - (ty + th + 5) - 40)
+    SelectAllChk.Move(10, ty + th + 2)
+
+	LV.Move(10, ty + th + 22, width - 20, height - (ty + th + 22) - 40)
 	StatusBar.Move(, height - 30, width, 22)
 
 }
@@ -319,7 +328,7 @@ AddItem(type, path, size) {
     if !FileExist(p)
         return
     SeenPaths[key] := true
-    Items.Push(Map("type", type, "path", p, "size", size, "selected", true))
+    Items.Push(Map("type", type, "path", p, "size", size))
 }
 
 ; ---------------------------
@@ -341,7 +350,8 @@ ScanAndPopulate(*) {
         AddProjectCaches()
 
         PopulateListView()
-        UpdateTotals()
+        CheckAllItems()
+        SelectAllChk.Value := true
         SB("Ready.")
     } finally {
         SetScanBusy(false)
@@ -548,7 +558,6 @@ PopulateListView() {
 		for idx, item in Items {
 			sizeStr := HumanSize(item["size"])
 			LV.Add("Check", item["type"], item["path"], sizeStr, item["size"])
-			LV.Modify(idx, item["selected"] ? "Check" : "UnCheck")
 		}
 		LV.ModifyCol(4, "Float")
 		LV.ModifyCol(4, "SortDesc")
@@ -583,23 +592,31 @@ OnOpenRow(ctrl, row) {
 
 UpdateTotals() {
 	try {
-		global Items, TotalLabel, LV
+		global TotalLabel, LV
 		total := 0
-		for it in Items
-			If it["selected"]
-				total += it["size"]
-		TotalLabel.Value := "Total to recover (selected): " HumanSize(total)
+		row := 0
+		Loop {
+			row := LV.GetNext(row, "C")
+			if !row
+				break
+			total += LV.GetText(row, 4)
+		}
+		TotalLabel.Value := "Recoverable: " HumanSize(total)
 		SB("Preview complete. Select/deselect items as needed.")
 	} Catch as e {
 	}    
 }
 
 CountSelected() {
-    global Items
+    global LV
     c := 0
-    for it in Items
-        if it["selected"]
-            c++
+    row := 0
+    Loop {
+        row := LV.GetNext(row, "C")
+        if !row
+            break
+        c++
+    }
     return c
 }
 
@@ -622,6 +639,22 @@ SB(msg) {
 	}    
 }
 
+CheckAllItems(*) {
+    global LV
+    Loop LV.GetCount() {
+        LV.Modify(A_Index, "Check")
+    }
+    UpdateTotals()
+}
+
+UncheckAllItems(*) {
+    global LV
+    Loop LV.GetCount() {
+        LV.Modify(A_Index, "-Check")
+    }
+    UpdateTotals()
+}
+
 ; ---------------------------
 ; --------- Delete ----------
 ; ---------------------------
@@ -642,10 +675,12 @@ DoDeleteSelected(*) {
     try {
         Log("---- Cleanup started: " A_Now " ----")
         failed := []
-        for it in Items {
-            if !it["selected"]
-                continue
-            path := it["path"]
+        row := 0
+        Loop {
+            row := LV.GetNext(row, "C")
+            if !row
+                break
+            path := LV.GetText(row, 2)
             ok := DeletePath(path)
             if ok
                 Log("[OK ] Deleted: " path)
