@@ -27,6 +27,9 @@ if not A_IsAdmin {
 Persistent
 ProcessSetPriority "High"
 
+; Cleanup on exit
+OnExit CleanupOnExit
+
 ; --- Tray Menu ---
 A_TrayMenu.Delete()
 A_TrayMenu.Add("Exit", (*) => ExitApp())
@@ -34,12 +37,21 @@ A_TrayMenu.Add("Exit", (*) => ExitApp())
 ; ---------------------------
 ; ---- Config & Defaults ----
 ; ---------------------------
+; Constants
+MAX_DEPTH_DEFAULT := 8
+MAX_FILES_SIZE_CALC := 100000
+TIMEOUT_SIZE_CALC_MS := 30000
+DEFAULT_CONFIRM_DELETE := true
+DEFAULT_INCLUDE_WINDOWS := true
+DEFAULT_INCLUDE_GLOBAL := true
+MAX_LISTVIEW_ITEMS := 5000  ; Limit for ListView to prevent bloat
+
 global AppTitle := "Dev Cache Cleaner"
 global IniFile  := A_ScriptDir "\cleanup.ini"
-global MaxDepth := 8
-global IncludeWindowsCleanup := true
-global IncludeGlobalCaches   := true
-global ConfirmBeforeDelete   := true
+global MaxDepth := MAX_DEPTH_DEFAULT
+global IncludeWindowsCleanup := DEFAULT_INCLUDE_WINDOWS
+global IncludeGlobalCaches   := DEFAULT_INCLUDE_GLOBAL
+global ConfirmBeforeDelete   := DEFAULT_CONFIRM_DELETE
 global LogFile := A_ScriptDir "\cleanup.log"
 global PreserveNames := []
 
@@ -53,9 +65,14 @@ global ExcludeExactPaths := []
 global WindowsTempDirs := []
 global GlobalCachePaths := []
 global SystemFilePatterns := []
+global SkipDirs := []
+
+
+
+
 
 ; UI globals
-global LV, TotalLabel, StatusBar, DeleteBtn, RefreshBtn, OpenBtn, SelectAllChk
+global LV, TotalLabel, StatusBar, DeleteBtn, RefreshBtn, OpenBtn, SelectAllChk, ProgressBar
 global Items := [] ; array of maps: {type, path, size}
 
 ; ---------------------------
@@ -109,6 +126,9 @@ WriteDefaultIni(path) {
 "`n[" "GlobalCaches" "]`n"
 "; Global caches outside projects (safe to clear)`n"
 "Paths=%USERPROFILE%\\AppData\\Local\\npm-cache|%LOCALAPPDATA%\\Yarn\\Cache|%LOCALAPPDATA%\\pnpm-store|%USERPROFILE%\\AppData\\Local\\pip\\Cache|%APPDATA%\\pypoetry\\Cache|%USERPROFILE%\\.cache\\pip|%USERPROFILE%\\.gradle\\caches|%USERPROFILE%\\.m2\\repository\\.cache|%LOCALAPPDATA%\\NuGet\\v3-cache|%USERPROFILE%\\.cargo\\registry\\cache|%USERPROFILE%\\go\\pkg\\mod\\cache|%LOCALAPPDATA%\\Google\\Chrome\\User Data\\Default\\Code Cache`n"
+"`n[" "SkipDirs" "]`n"
+"; Directories to skip during project scanning for speed`n"
+"Dirs=node_modules,.git,vendor,.venv,.next,.nuxt,dist,build,obj,bin,target,.gradle`n"
 , path)
 }
 
@@ -117,10 +137,10 @@ ReadConfig(path) {
     global RootPaths, AlwaysDeletePaths, MarkerFiles, CacheDirPatterns, ExcludeDirSegments, ExcludeExactPaths, WindowsTempDirs, GlobalCachePaths, SystemFilePatterns
 
     ; General
-    ConfirmBeforeDelete := IniRead(path, "General", "ConfirmBeforeDelete", 1) = 1
-    MaxDepth := Integer(IniRead(path, "General", "MaxDepth", 8))
-    IncludeWindowsCleanup := IniRead(path, "General", "IncludeWindowsCleanup", 1) = 1
-    IncludeGlobalCaches   := IniRead(path, "General", "IncludeGlobalCaches", 1) = 1
+    ConfirmBeforeDelete := IniRead(path, "General", "ConfirmBeforeDelete", DEFAULT_CONFIRM_DELETE) = 1
+    MaxDepth := Integer(IniRead(path, "General", "MaxDepth", MAX_DEPTH_DEFAULT))
+    IncludeWindowsCleanup := IniRead(path, "General", "IncludeWindowsCleanup", DEFAULT_INCLUDE_WINDOWS) = 1
+    IncludeGlobalCaches   := IniRead(path, "General", "IncludeGlobalCaches", DEFAULT_INCLUDE_GLOBAL) = 1
     LogFile := IniRead(path, "General", "LogFile", A_ScriptDir "\cleanup.log")
 
     ; Lists
@@ -133,6 +153,9 @@ ReadConfig(path) {
     WindowsTempDirs := ExpandList(IniRead(path, "WindowsCleanup", "TempDirs", ""))
     GlobalCachePaths := ExpandList(IniRead(path, "GlobalCaches", "Paths", ""))
     SystemFilePatterns := SplitList(IniRead(path, "SystemPatterns", "Patterns", ""))
+    SkipDirs := SplitList(IniRead(path, "SkipDirs", "Dirs", "node_modules,.git,vendor,.venv,.next,.nuxt,dist,build,obj,bin,target,.gradle"))
+
+
 
 	; normal INI read first
 	PreserveNamesRaw := IniRead(path, "Preserve", "Names", "")
@@ -230,7 +253,7 @@ ExpandList(str) {
 ; ----------- GUI -----------
 ; ---------------------------
 BuildGui() {
-    global LV, TotalLabel, StatusBar, DeleteBtn, RefreshBtn, OpenBtn, SelectAllChk
+    global LV, TotalLabel, StatusBar, DeleteBtn, RefreshBtn, OpenBtn, SelectAllChk, ProgressBar
 
     GuiTitle := AppTitle
     myGui := Gui("+Resize -MaximizeBox", GuiTitle)
@@ -250,6 +273,8 @@ BuildGui() {
     myGui.SetFont("s12 cBlue Bold")
     TotalLabel := myGui.Add("Text", "x10 y+10 w300", "Recoverable: Calculating…")
     myGui.SetFont()
+
+    ProgressBar := myGui.Add("Progress", "x10 y+5 w300 h20", 0)
 
     SelectAllChk := myGui.Add("Checkbox", "x10 y+5", "Select All")
     SelectAllChk.Value := true
@@ -295,7 +320,7 @@ SetUIBusy(flag) {
 }
 
 OnResize(gui, minMax, width, height) {
-    global LV, TotalLabel, RefreshBtn, DeleteBtn, OpenBtn, StatusBar, SelectAllChk
+    global LV, TotalLabel, RefreshBtn, DeleteBtn, OpenBtn, StatusBar, SelectAllChk, ProgressBar
 
     if (minMax = -1) ; minimized
         return
@@ -314,8 +339,9 @@ OnResize(gui, minMax, width, height) {
 
     SelectAllChk.Move(10, ty + th + 2)
 
-	LV.Move(10, ty + th + 22, width - 20, height - (ty + th + 22) - 40)
-	StatusBar.Move(, height - 30, width, 22)
+ 	LV.Move(10, ty + th + 22, width - 20, height - (ty + th + 22) - 22)
+ 	ProgressBar.Move((width - 300) / 2, (height - 20) / 2, 300, 20)
+ 	StatusBar.Move(, height - 22, width, 22)
 
 }
 
@@ -327,6 +353,8 @@ AddItem(type, path, size) {
         return
     if !FileExist(p)
         return
+    if size == 0  ; Don't add items with zero size (e.g., empty dirs)
+        return
     SeenPaths[key] := true
     Items.Push(Map("type", type, "path", p, "size", size))
 }
@@ -335,70 +363,90 @@ AddItem(type, path, size) {
 ; ---- Scanning & Sizes -----
 ; ---------------------------
 ScanAndPopulate(*) {
-    global Items, LV, SeenPaths
+    global Items, LV, SeenPaths, ProgressBar
     SetScanBusy(true)
+    scanStart := A_TickCount
+    Log("[SCAN] Starting scan at " A_Now)
     try {
         Items := []
-        SeenPaths := Map()  ; key = normalized lowercase absolute path
+        SeenPaths := Map()
         LV.Delete()
+        ProgressBar.Visible := true
+        ProgressBar.Value := 0
         SB("Scanning… this may take a bit on big folders.")
 
         AddAlwaysDelete()
+        ProgressBar.Value := 20
         AddWindowsCleanup()
+        ProgressBar.Value := 40
         AddGlobalCaches()
+        ProgressBar.Value := 60
         AddSystemPatterns()
+        ProgressBar.Value := 80
         AddProjectCaches()
+        ProgressBar.Value := 100
 
         PopulateListView()
         CheckAllItems()
         SelectAllChk.Value := true
+        ProgressBar.Value := 100
+        ProgressBar.Visible := false
+        scanEnd := A_TickCount
+        scanTime := scanEnd - scanStart
+        Log("[SCAN] Scan completed in " scanTime " ms, found " Items.Length " items")
         SB("Ready.")
     } finally {
         SetScanBusy(false)
     }
 }
 
-DelFile(path) {
+SafeDelete(path) {
     global PreserveNames
     name := SplitPathName(path)
     if IsPreserved(name, PreserveNames) {
-        Log("[SKIP] Preserved file: " path)
-        return true  ; Return true to indicate "success" (file was preserved as intended)
+        Log("[SKIP] Preserved: " path)
+        return true
     }
     try {
-        FileSetAttrib("-R", path, "F")  ; clear read-only on the file
-        FileDelete(path)
-        return !FileExist(path)
+        FileSetAttrib("-R", path, "F")
+        if DirExist(path) {
+            return CleanDirPreserving(path, PreserveNames)
+        } else {
+            FileDelete(path)
+            return !FileExist(path)
+        }
     } catch {
         return false
     }
 }
 
+DelFile(path) {
+    return SafeDelete(path)
+}
+
 AddAlwaysDelete() {
-    global AlwaysDeletePaths, Items
-    for p in AlwaysDeletePaths {
-        p := NormalizePath(p)
-        AddItem("AlwaysDelete", p, DeletableSize(p))
-    }
+    global AlwaysDeletePaths
+    AddItems("AlwaysDelete", AlwaysDeletePaths)
 }
 
 AddWindowsCleanup() {
-    global IncludeWindowsCleanup, WindowsTempDirs, Items
+    global IncludeWindowsCleanup, WindowsTempDirs
     if !IncludeWindowsCleanup
         return
-    for p in WindowsTempDirs {
-        p := NormalizePath(p)
-        AddItem("WindowsTemp", p, DeletableSize(p))
-    }
+    AddItems("WindowsTemp", WindowsTempDirs)
 }
 
 AddGlobalCaches() {
-    global IncludeGlobalCaches, GlobalCachePaths, Items
+    global IncludeGlobalCaches, GlobalCachePaths
     if !IncludeGlobalCaches
         return
-    for p in GlobalCachePaths {
+    AddItems("GlobalCache", GlobalCachePaths)
+}
+
+AddItems(type, paths) {
+    for p in paths {
         p := NormalizePath(p)
-        AddItem("GlobalCache", p, DeletableSize(p))
+        AddItem(type, p, DeletableSize(p))
     }
 }
 
@@ -460,19 +508,13 @@ EnumerateProjects(root, maxDepth, markerFiles) {
         }
         loop files dir "\*", "D" {
             sub := A_LoopFileFullPath
-            ; skip node_modules etc for speed
-               if InStr(sub, "\node_modules\")
-             || InStr(sub, "\.git\")
-             || InStr(sub, "\vendor\")
-             || InStr(sub, "\.venv\")
-             || InStr(sub, "\.next\")
-             || InStr(sub, "\.nuxt\")
-             || InStr(sub, "\dist\")
-             || InStr(sub, "\build\")
-             || InStr(sub, "\obj\")
-             || InStr(sub, "\bin\")
-             || InStr(sub, "\target\")
-             || InStr(sub, "\.gradle\")
+            ; skip configured dirs for speed
+            skip := false
+            for skipDir in SkipDirs {
+                if InStr(sub, "\" skipDir "\")
+                    skip := true
+            }
+            if skip
                 continue
             ScanDir(sub, depth+1)
         }
@@ -523,7 +565,7 @@ NormalizePath(p) {
 }
 
 DeletableSize(path) {
-    global PreserveNames
+    global PreserveNames, MAX_FILES_SIZE_CALC, TIMEOUT_SIZE_CALC_MS
     if FileExist(path) && !DirExist(path) {
         name := SplitPathName(path)
         return IsPreserved(name, PreserveNames) ? 0 : FileGetSize(path, "B")
@@ -532,11 +574,21 @@ DeletableSize(path) {
         return 0
 
     total := 0
+    fileCount := 0
+    startTime := A_TickCount
+
     ; Single recursive files loop is faster than manual dir recursion
     Loop files path "\*", "FR" {
+        ; Check for timeout or file count limit
+        if (A_TickCount - startTime > TIMEOUT_SIZE_CALC_MS) || (fileCount >= MAX_FILES_SIZE_CALC) {
+            Log("[WARN] Size calculation timed out or hit limit for: " path " (processed " fileCount " files)")
+            break
+        }
         name := A_LoopFileName
-        if !IsPreserved(name, PreserveNames)
+        if !IsPreserved(name, PreserveNames) {
             total += A_LoopFileSize  ; uses cached size for the current loop item
+            fileCount++
+        }
     }
     return total
 }
@@ -553,8 +605,12 @@ SplitPathName(p) {
 ; ---------------------------
 PopulateListView() {
 	try {
-		global LV, Items
-		LV.Opt("-Redraw")  ; <-- add
+		global LV, Items, MAX_LISTVIEW_ITEMS
+		if Items.Length > MAX_LISTVIEW_ITEMS {
+			MsgBox "Too many items found (" Items.Length "). Showing first " MAX_LISTVIEW_ITEMS ".", AppTitle, "Icon!"
+			Items := Items.Slice(1, MAX_LISTVIEW_ITEMS)
+		}
+		LV.Opt("-Redraw")
 		for idx, item in Items {
 			sizeStr := HumanSize(item["size"])
 			LV.Add("Check", item["type"], item["path"], sizeStr, item["size"])
@@ -565,6 +621,7 @@ PopulateListView() {
 		LV.OnEvent("DoubleClick", OnOpenRow)
 		LV.Opt("+Redraw")
 	} Catch as e {
+		Log("[ERR] PopulateListView: " e.Message)
 	}
 }
 
@@ -594,30 +651,18 @@ UpdateTotals() {
 	try {
 		global TotalLabel, LV
 		total := 0
-		row := 0
-		Loop {
-			row := LV.GetNext(row, "C")
-			if !row
-				break
+		for row in GetSelectedRows() {
 			total += LV.GetText(row, 4)
 		}
 		TotalLabel.Value := "Recoverable: " HumanSize(total)
 		SB("Preview complete. Select/deselect items as needed.")
 	} Catch as e {
-	}    
+		Log("[ERR] UpdateTotals: " e.Message)
+	}
 }
 
 CountSelected() {
-    global LV
-    c := 0
-    row := 0
-    Loop {
-        row := LV.GetNext(row, "C")
-        if !row
-            break
-        c++
-    }
-    return c
+    return GetSelectedRows().Length
 }
 
 HumanSize(bytes) {
@@ -655,11 +700,26 @@ UncheckAllItems(*) {
     UpdateTotals()
 }
 
+; --------------------------- Helper functions ---------------------------
+
+GetSelectedRows() {
+    global LV
+    rows := []
+    row := 0
+    Loop {
+        row := LV.GetNext(row, "C")
+        if !row
+            break
+        rows.Push(row)
+    }
+    return rows
+}
+
 ; ---------------------------
 ; --------- Delete ----------
 ; ---------------------------
 DoDeleteSelected(*) {
-    global Items, ConfirmBeforeDelete, LogFile
+    global Items, ConfirmBeforeDelete, LogFile, LV
 
     if CountSelected() = 0 {
         MsgBox "Nothing selected.", AppTitle, "Iconx"
@@ -675,6 +735,7 @@ DoDeleteSelected(*) {
     try {
         Log("---- Cleanup started: " A_Now " ----")
         failed := []
+        rowsToDelete := []
         row := 0
         Loop {
             row := LV.GetNext(row, "C")
@@ -682,20 +743,35 @@ DoDeleteSelected(*) {
                 break
             path := LV.GetText(row, 2)
             ok := DeletePath(path)
-            if ok
+            if ok {
                 Log("[OK ] Deleted: " path)
-            else {
+                rowsToDelete.Push(row)
+            } else {
                 Log("[ERR] Failed:  " path)
                 failed.Push(path)
             }
         }
         Log("---- Cleanup finished: " A_Now " ----`n")
 
+        ; Remove successfully deleted rows from LV (from bottom to top to avoid index shifts)
+        reversedRows := []
+        for i in rowsToDelete {
+            reversedRows.InsertAt(1, i)  ; Reverse the order
+        }
+        for i in reversedRows {
+            LV.Delete(i)
+        }
+
+        ; Update totals after removing rows
+        UpdateTotals()
+
         if failed.Length {
             MsgBox "Done with some errors.`nFailed to delete:`n`n" JoinLines(failed), AppTitle, "Iconx"
         } else {
             MsgBox "Cleanup complete.", AppTitle, "Iconi"
         }
+
+        ; Re-scan to refresh the list with current state
         ScanAndPopulate()
     } finally {
         SetUIBusy(false)
@@ -703,64 +779,39 @@ DoDeleteSelected(*) {
 }
 
 DeletePath(path) {
-    global PreserveNames
     try {
-        if DirExist(path) {
-            return CleanDirPreserving(path, PreserveNames)
-        } else if FileExist(path) {
-            name := SplitPathName(path)
-
-            if IsPreserved(name, PreserveNames) {
-                Log("[PRESERVE] Keeping file: " path)
-                return true  ; Don't try to delete preserved files
-            }
-
-            return DelFile(path)
-        }
+        return SafeDelete(path)
     } catch {
-        ; try removing read-only then retry once
-        try FileSetAttrib("-R", path, "F")  ; target file
-        try {
-            if DirExist(path)
-                return CleanDirPreserving(path, PreserveNames)
-            else if FileExist(path) {
-                name := SplitPathName(path)
-                if IsPreserved(name, PreserveNames) {
-                    Log("[PRESERVE] Keeping file: " path)
-                    return true
-                }
-                return DelFile(path)
-            }
-        } catch {
-            return false
-        }
+        ; Retry once after clearing read-only
+        try FileSetAttrib("-R", path, "F")
+        return SafeDelete(path)
+    } catch {
+        return false
     }
-    return false
 }
 
 CleanDirPreserving(dir, preserveList) {
     ; delete all files except preserved names, and recurse into subdirs applying same rule
     ; returns true if no exception occurred (we're lenient)
     try {
-        ; files
-        Loop files dir "\*", "F" {
-            name := A_LoopFileName
-            if !IsPreserved(name, preserveList) {
-                try FileSetAttrib("-R", A_LoopFileFullPath, "F")
-                ; Only attempt to delete if file is not preserved
-                DelFile(A_LoopFileFullPath)
+        ; Combined loop for files and dirs
+        Loop files dir "\*", "FD" {
+            if InStr(A_LoopFileAttrib, "D") {
+                ; Directory
+                CleanDirPreserving(A_LoopFileFullPath, preserveList)
+                if DirIsEmpty(A_LoopFileFullPath)
+                    DirDelete(A_LoopFileFullPath)
             } else {
-                ; Log that we're preserving this file
-                Log("[PRESERVE] Keeping file: " A_LoopFileFullPath)
+                ; File
+                name := A_LoopFileName
+                if !IsPreserved(name, preserveList) {
+                    FileSetAttrib("-R", A_LoopFileFullPath, "F")
+                    DelFile(A_LoopFileFullPath)
+                } else {
+                    Log("[PRESERVE] Keeping file: " A_LoopFileFullPath)
+                }
             }
         }
-        ; dirs
-        Loop files dir "\*", "D" {
-            CleanDirPreserving(A_LoopFileFullPath, preserveList)
-            if DirIsEmpty(A_LoopFileFullPath)
-                DirDelete(A_LoopFileFullPath)
-        }
-
         return true
     } catch {
         return false
@@ -826,5 +877,9 @@ Log(msg) {
         ; If that fails, try the script directory
         try FileAppend(FormatTime(A_Now, "yyyyMMddHHmmss") "  " msg "`n", A_ScriptDir "\emergency_log.log")
     }
+}
+
+CleanupOnExit(*) {
+    Log("Script exited cleanly.")
 }
 
