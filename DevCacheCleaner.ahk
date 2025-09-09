@@ -68,9 +68,6 @@ global SystemFilePatterns := []
 global SkipDirs := []
 
 
-
-
-
 ; UI globals
 global LV, TotalLabel, StatusBar, DeleteBtn, RefreshBtn, OpenBtn, SelectAllChk, ProgressBar
 global Items := [] ; array of maps: {type, path, size}
@@ -867,15 +864,15 @@ Log(msg) {
     ; Always show where we're logging to (at least once)
     static logLocationShown := false
     if (!logLocationShown) {
-        try FileAppend("=== LOG FILE LOCATION: " expandedPath " ===`n", expandedPath)
+        ;try FileAppend("=== LOG FILE LOCATION: " expandedPath " ===`n", expandedPath)
         logLocationShown := true
     }
 
     try {
-        FileAppend(FormatTime(A_Now, "yyyyMMddHHmmss") "  " msg "`n", expandedPath)
+        ;FileAppend(FormatTime(A_Now, "yyyyMMddHHmmss") "  " msg "`n", expandedPath)
     } catch {
         ; If that fails, try the script directory
-        try FileAppend(FormatTime(A_Now, "yyyyMMddHHmmss") "  " msg "`n", A_ScriptDir "\emergency_log.log")
+        ;try FileAppend(FormatTime(A_Now, "yyyyMMddHHmmss") "  " msg "`n", A_ScriptDir "\emergency_log.log")
     }
 }
 
